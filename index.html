@@ -86,7 +86,11 @@ button.link:hover,button.link:focus-visible{background:none;color:var(--fg)}
 .tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--mid);font-size:12px}
 .tools button{padding:5px 11px;font-size:12px;border-color:var(--line)}
 #off{min-width:54px;text-align:center;font-variant-numeric:tabular-nums}
-#lyrics{position:relative;overflow:hidden;-webkit-mask-image:linear-gradient(transparent,#000 18%,#000 82%,transparent);mask-image:linear-gradient(transparent,#000 18%,#000 82%,transparent)}
+#lyrics{position:relative;overflow:hidden}
+#lm{position:absolute;inset:0;-webkit-mask-image:linear-gradient(transparent,#000 18%,#000 82%,transparent);mask-image:linear-gradient(transparent,#000 18%,#000 82%,transparent)}
+#singer{position:absolute;top:clamp(6px,3.5vh,28px);left:24px;z-index:3;display:none;align-items:center;gap:10px;padding:9px 16px;border-radius:999px;background:rgba(255,255,255,.1);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);font-size:15px;font-weight:600;color:#fff;pointer-events:none}
+#singer.on{display:flex}
+#sdot{width:9px;height:9px;border-radius:50%;background:#fff;transition:background .6s}
 #stage{position:absolute;inset:0;overflow:hidden;will-change:transform,opacity,filter}
 #stage.plain{overflow-y:auto;scrollbar-width:none;padding:12% 0}
 #track{position:absolute;left:0;right:0;top:0;padding:0 24px;will-change:transform;transition:transform .9s var(--ease)}
@@ -98,11 +102,9 @@ button.link:hover,button.link:focus-visible{background:none;color:var(--fg)}
 #stage.plain .l{font-size:clamp(20px,2.4vw,30px);opacity:.85;filter:none;transform:none;padding:.18em 0}
 .tag{color:var(--mid);font-size:14px;margin-bottom:18px}
 .l{--hi:#fff;--lo:rgba(255,255,255,.42)}
-.tx{display:block;--p:var(--lp,100);color:transparent;background:linear-gradient(to top,var(--hi) calc(var(--p)*1.1% - 10%),var(--lo) calc(var(--p)*1.1%));-webkit-background-clip:text;background-clip:text}
+.tx{display:block;--p:var(--lp,100);color:transparent;background:linear-gradient(to bottom,var(--hi) calc(var(--p)*1.1% - 10%),var(--lo) calc(var(--p)*1.1%));-webkit-background-clip:text;background-clip:text}
 #stage.sy .l{cursor:pointer}
 #stage.sy .l:not(.a):hover{opacity:.7;filter:none}
-.who{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;letter-spacing:0;line-height:1;margin-bottom:10px;opacity:.75}
-.who i{width:8px;height:8px;border-radius:50%}
 #note{position:absolute;inset:0;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:20px;font-size:clamp(22px,3vw,40px);font-weight:700;letter-spacing:-.03em;color:var(--mid);pointer-events:none;transition:opacity .5s var(--ease);z-index:2}
 #note button{pointer-events:auto;font-size:14px;font-weight:400;letter-spacing:0;padding:10px 20px}
 .msr{display:flex;gap:8px;pointer-events:auto;flex-wrap:wrap}
@@ -160,7 +162,7 @@ button.link:hover,button.link:focus-visible{background:none;color:var(--fg)}
 </div>
 <div class="tools"><span>Sync</span><button id="minus" aria-label="Earlier">−50</button><span id="off">0 ms</span><button id="plus" aria-label="Later">+50</button></div>
 </section>
-<section id="lyrics"><div id="idle">Open Spotify and play a song.</div><div id="note"></div><div id="stage"><div id="track"></div></div></section>
+<section id="lyrics"><div id="singer"><i id="sdot"></i><span id="sname"></span></div><div id="lm"><div id="idle">Open Spotify and play a song.</div><div id="note"></div><div id="stage"><div id="track"></div></div></div></section>
 </div>
 <div id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -369,7 +371,7 @@ function build(list,isSynced,dir,plain,src){
 if(stageAnim){stageAnim.cancel();stageAnim=null}
 inDir=dir||1;
 trackEl.textContent="";
-stage.classList.toggle("plain",!!plain);stage.classList.toggle("sy",!!isSynced);whoArr=null;
+stage.classList.toggle("plain",!!plain);stage.classList.toggle("sy",!!isSynced);whoArr=null;singerNow=null;$("singer").classList.toggle("on",!!(isSynced&&list.length));
 stage.scrollTop=0;
 if(plain){const tg=document.createElement("div");tg.className="tag";tg.textContent="These lyrics aren’t synced."+(src?" Source: "+src+".":"");trackEl.appendChild(tg)}
 els=list.map(x=>{const d=document.createElement("div");d.className="l";const sp=document.createElement("span");sp.className="tx";sp.textContent=x.s||"♪";d.appendChild(sp);trackEl.appendChild(d);return d;
@@ -453,27 +455,26 @@ who.push(prev);
 }
 return hit/Math.max(1,list.filter(l=>norm(l.s)).length)>.5?{who,main}:null;
 }
-let mainArtist="";
+let mainArtist="",singerNow=null;
+function updateSinger(i,force){
+const arr=curWho&&curWho.who,main=curWho?curWho.main:mainArtist,w=(arr&&arr[Math.max(0,i)])||main;
+if(!w||(w===singerNow&&!force))return;
+singerNow=w;
+$("sdot").style.background=w===main?"#fff":"hsl("+hueOf(w)+" 85% 70%)";
+swapText($("sname"),w,1,0);
+}
 function setWho(r){
 curWho=r;
 const arr=r&&r.who,main=r?r.main:mainArtist;
 els.forEach((el,i)=>{
-const o=el.querySelector(".who");if(o)o.remove();
 el.style.removeProperty("--hi");el.style.removeProperty("--lo");
-const w=arr?arr[i]:(i===0?main:null);
-if(!w)return;
-const isMain=w===main,hue=hueOf(w);
-if(!isMain){el.style.setProperty("--hi","hsl("+hue+" 85% 84%)");el.style.setProperty("--lo","hsl("+hue+" 85% 84% / .42)")}
-if(i===0||(arr&&arr[i-1]!==w)){
-const t=document.createElement("span"),d=document.createElement("i");
-t.className="who";d.style.background=isMain?"#fff":"hsl("+hue+" 85% 70%)";
-t.append(d,w);el.prepend(t);
-}
+const w=arr&&arr[i];
+if(w&&w!==main){const hue=hueOf(w);el.style.setProperty("--hi","hsl("+hue+" 85% 84%)");el.style.setProperty("--lo","hsl("+hue+" 85% 84% / .42)")}
 });
-if(active>=0)center(active);
+updateSinger(active,true);
 }
 const whoMsg=()=>({type:"who",id:cur.id,who:curWho&&curWho.who,main:curWho&&curWho.main});
-/* the current line fills with white from the bottom up, reaching full right as the next lyric starts */
+/* the current line fills with white from the top down, reaching full right as the next lyric starts */
 function tick(t){
 if(!synced||!els.length)return;
 const i=active;
@@ -544,6 +545,7 @@ els[k].style.setProperty("--lp",k===i?0:100);
 if(k!==i&&els[k]._act){els[k]._act=false;const x=els[k].querySelector(".tx");if(x){x.style.removeProperty("--p");x._p=undefined}}
 }
 if(i>=0)center(i);
+updateSinger(i);
 if(fresh){
 fresh=false;
 const s=Math.max(0,i-2);
