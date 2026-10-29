@@ -1,66 +1,124 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>App</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      background-color: #000000;
-      color: #ffffff;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-    }
-    .container {
-      text-align: center;
-    }
-    h1 {
-      font-size: 2rem;
-      font-weight: 300;
-      letter-spacing: 0.2rem;
-      text-transform: uppercase;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synchrony</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center}
+.view{display:none}
+.view.active{display:block}
+h1{font-weight:200;font-size:clamp(1.5rem,5vw,3rem);letter-spacing:.5em;text-transform:uppercase;padding-left:.5em}
+p{font-weight:300;font-size:.75rem;letter-spacing:.3em;text-transform:uppercase;opacity:.5}
+button{background:none;border:1px solid #fff;color:#fff;padding:.9rem 2rem;margin-top:2rem;font-size:.75rem;letter-spacing:.3em;text-transform:uppercase;cursor:pointer;transition:background .2s,color .2s}
+button:hover{background:#fff;color:#000}
+</style>
 </head>
 <body>
-  <div class="container">
-    <h1 id="status">Connecting...</h1>
-  </div>
+<div class="view active" id="loading"><p>Connecting</p></div>
+<div class="view" id="done"><h1>Coming Soon</h1></div>
+<div class="view" id="error"><p>Connection failed</p><button id="retry">Retry</button></div>
+<script>
+const clientId="c361237077b7462180c155eafff8aeda";
+const redirectUri="https://synchronydemo.github.io/";
+const scope="user-read-private user-read-email";
 
-  <script>
-    const clientId = 'c361237077b7462180c155eafff8aeda';
-    const redirectUri = 'https://synchronydemo.github.io/';
-    const scope = 'user-read-private user-read-email';
+function show(id){
+  document.querySelectorAll(".view").forEach(function(v){v.classList.remove("active")});
+  document.getElementById(id).classList.add("active");
+}
 
-    function getHashParams() {
-      const hashParams = {};
-      const hash = window.location.hash.substring(1);
-      const params = hash.split('&');
-      for (let i = 0; i < params.length; i++) {
-        if (!params[i]) continue;
-        const pair = params[i].split('=');
-        hashParams[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || '');
-      }
-      return hashParams;
+function randomString(length){
+  const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const values=crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(values).map(function(v){return chars[v%chars.length]}).join("");
+}
+
+async function challengeFrom(verifier){
+  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(verifier));
+  return btoa(String.fromCharCode.apply(null,new Uint8Array(digest))).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
+}
+
+async function connect(){
+  const verifier=randomString(64);
+  localStorage.setItem("sp_verifier",verifier);
+  const params=new URLSearchParams({
+    response_type:"code",
+    client_id:clientId,
+    scope:scope,
+    redirect_uri:redirectUri,
+    code_challenge_method:"S256",
+    code_challenge:await challengeFrom(verifier)
+  });
+  window.location.href="https://accounts.spotify.com/authorize?"+params.toString();
+}
+
+function saveTokens(data){
+  localStorage.setItem("sp_access",data.access_token);
+  localStorage.setItem("sp_expires",String(Date.now()+data.expires_in*1000));
+  if(data.refresh_token){localStorage.setItem("sp_refresh",data.refresh_token)}
+}
+
+async function requestToken(body){
+  const res=await fetch("https://accounts.spotify.com/api/token",{
+    method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams(body)
+  });
+  if(!res.ok){throw new Error("token")}
+  saveTokens(await res.json());
+}
+
+async function init(){
+  const params=new URLSearchParams(window.location.search);
+  if(params.get("error")){
+    history.replaceState({},"",redirectUri);
+    show("error");
+    return;
+  }
+  const code=params.get("code");
+  if(code){
+    try{
+      await requestToken({
+        client_id:clientId,
+        grant_type:"authorization_code",
+        code:code,
+        redirect_uri:redirectUri,
+        code_verifier:localStorage.getItem("sp_verifier")
+      });
+      history.replaceState({},"",redirectUri);
+      show("done");
+    }catch(e){
+      history.replaceState({},"",redirectUri);
+      show("error");
     }
+    return;
+  }
+  const access=localStorage.getItem("sp_access");
+  const expires=Number(localStorage.getItem("sp_expires"));
+  if(access&&expires>Date.now()){
+    show("done");
+    return;
+  }
+  const refresh=localStorage.getItem("sp_refresh");
+  if(refresh){
+    try{
+      await requestToken({
+        client_id:clientId,
+        grant_type:"refresh_token",
+        refresh_token:refresh
+      });
+      show("done");
+      return;
+    }catch(e){}
+  }
+  connect();
+}
 
-    const params = getHashParams();
-
-    if (params.access_token) {
-      window.location.hash = '';
-      document.getElementById('status').innerText = 'COMING SOON';
-    } else {
-      const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}`;
-      window.location.href = authUrl;
-    }
-  </script>
+document.getElementById("retry").addEventListener("click",connect);
+init();
+</script>
 </body>
 </html>
