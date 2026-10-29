@@ -68,7 +68,6 @@ button.link:hover,button.link:focus-visible{background:none;color:var(--fg)}
 .meta{min-width:0}
 #title{font-size:26px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #artist{color:var(--mid);margin-top:4px;font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#artist.duo{color:transparent;width:fit-content;max-width:100%;background:linear-gradient(90deg,var(--g1),var(--g2));-webkit-background-clip:text;background-clip:text}
 .prog{width:100%}
 .bar{position:relative;height:20px;display:flex;align-items:center;cursor:pointer;touch-action:none;outline:none}
 .trk{position:absolute;left:0;right:0;height:3px;background:var(--line);border-radius:3px;overflow:hidden;transition:height .4s var(--ease)}
@@ -219,9 +218,11 @@ $("plus").onclick=()=>setOffset(offset+50);
 $("connect").onclick=login;
 
 let role=null,cur={id:null,dur:0,playing:false,pos:0,at:0,tr:null};
-let lines=[],els=[],active=-2,synced=false,endPolled=false,lastSec=-1,hold=0,seeking=false,seekRatio=0,fxDir=1,inDir=1,fresh=false,stageAnim=null,artTok=0,curLy=null,lastV=null,lastDir=1,stageReady=true,tempo=null;
+let lines=[],els=[],active=-2,synced=false,endPolled=false,lastSec=-1,hold=0,seeking=false,seekRatio=0,fxDir=1,inDir=1,fresh=false,stageAnim=null,artTok=0,curLy=null,lastV=null,lastDir=1,stageReady=true,tempo=null,singerNow=null,trackArtists=[],roster=[];
 const cache=new Map();
 const tcache=new Map();
+const gcache=new Map();
+const refined=new Map();
 const trackEl=$("track"),stage=$("stage"),lyr=$("lyrics"),note=$("note"),bar=$("bar"),disc=$("disc");
 let front=$("art"),back=$("art2");
 const fmt=ms=>{const s=Math.max(0,Math.floor(ms/1000));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0")};
@@ -231,7 +232,7 @@ const out=[];
 for(const raw of t.split("\n")){
 const m=raw.match(/^((?:\[\d+:\d+(?:[.:]\d+)?\])+)\s*(.*)$/);
 if(!m)continue;
-const text=m[2].trim();
+const text=m[2].replace(/<\d+:\d+(?:[.:]\d+)?>/g,"").replace(/\s+/g," ").trim();
 for(const tm of m[1].matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g)){
 const frac=tm[3]?Number("0."+tm[3]):0;
 out.push({t:(Number(tm[1])*60+Number(tm[2])+frac)*1000,s:text});
@@ -241,6 +242,20 @@ return out.sort((a,b)=>a.t-b.t);
 }
 const norm=s=>(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/&/g,"and").replace(/[^a-z0-9]+/g," ").trim();
 const clean=s=>s.replace(/\s*[\(\[][^\)\]]*(feat|ft\.|with|prod|remaster|version|edit|mix|live|mono|stereo|deluxe|explicit|clean)[^\)\]]*[\)\]]/ig,"").replace(/\s+-\s+.*(remaster|version|edit|mix|live|mono|stereo|single|deluxe).*$/i,"").replace(/\s+/g," ").trim()||s;
+const fullTok=s=>norm(s).split(" ").filter(Boolean);
+const coreTok=s=>fullTok(String(s).replace(/\([^)]*\)/g," ").replace(/\[[^\]]*\]/g," "));
+const jac=(a,b)=>{if(!a.length||!b.length)return 0;const A=new Set(a),B=new Set(b);let n=0;A.forEach(w=>{if(B.has(w))n++});return n/(A.size+B.size-n)};
+const lineSim=(x,y)=>Math.max(jac(x.core,y.core),jac(x.full,y.full));
+const junk=s=>/^(you might also like|\d*embed|see .+ live|get tickets .+)$/i.test(s)||/have yet to be released/i.test(s);
+const plainFrom=raw=>raw.split("\n").map(s=>s.trim()).filter(s=>!/^\[.*\]$/.test(s)&&!junk(s)).join("\n").replace(/\n{3,}/g,"\n\n").trim();
+const sameName=(a,b)=>{const x=norm(a),y=norm(b);return !!x&&!!y&&(x===y||(" "+x+" ").includes(" "+y+" ")||(" "+y+" ").includes(" "+x+" "))};
+
+function rosterOf(tr){
+const r=tr.artists.map(a=>a.name);
+const m=tr.name.match(/[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^\)\]]+)[\)\]]/i);
+if(m)m[1].split(/\s*(?:,|&|\band\b)\s*/i).map(s=>s.trim()).filter(Boolean).forEach(n=>{if(!r.some(a=>sameName(a,n)))r.push(n)});
+return r;
+}
 
 const Q={n:0,hi:[],lo:[]};
 function pump(){while(Q.n<3&&(Q.hi.length||Q.lo.length)){const j=(Q.hi.length?Q.hi:Q.lo).shift();Q.n++;j.f().then(j.ok,j.no).finally(()=>{Q.n--;pump()})}}
@@ -260,7 +275,7 @@ else if(tn.length>1&&want.some(w=>w&&(tn.includes(w)||w.includes(tn))))s+=20;
 else return -1;
 if(an&&tr.artists.some(a=>{const n=norm(a.name);return n&&(an.includes(n)||n.includes(an))}))s+=30;
 else return -1;
-if(c.duration){const d=Math.abs(c.duration-dur);if(d>20)return -1;s+=d<=2?30:d<=6?15:0}
+if(c.duration){const d=Math.abs(c.duration-dur);if(d>8)return -1;s+=(d<=2?30:d<=5?15:0)-d*.01}
 if(c.syncedLyrics)s+=10;
 else if(c.plainLyrics)s+=2;
 else if(!(ins&&c.instrumental))return -1;
@@ -268,23 +283,180 @@ return s;
 }
 
 const PX=[u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),u=>"https://corsproxy.io/?url="+encodeURIComponent(u),u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u)];
+const sig=()=>typeof AbortSignal!=="undefined"&&AbortSignal.timeout?{signal:AbortSignal.timeout(9000)}:{};
 async function viaProxy(u,json){
-for(const p of PX){try{const r=await fetch(p(u));if(r.ok)return json?await r.json():await r.text()}catch(e){}}
+for(const p of PX){try{const r=await fetch(p(u),sig());if(r.ok)return json?await r.json():await r.text()}catch(e){}}
 return null;
 }
-async function genius(q,artist,title,raw){
-const s=await viaProxy("https://genius.com/api/search/multi?per_page=5&q="+encodeURIComponent(q),true);
-const hits=((s&&s.response&&s.response.sections)||[]).flatMap(x=>x.hits||[]).filter(h=>h.type==="song"&&h.result&&h.result.url).map(h=>h.result);
-const w=norm(title||""),as=[].concat(artist||[]).map(norm).filter(Boolean);
-const hit=title?hits.find(h=>{const t=norm(h.title),pa=norm(h.primary_artist&&h.primary_artist.name);return t&&(t===w||t.includes(w)||w.includes(t))&&pa&&as.some(a=>pa.includes(a)||a.includes(pa))}):hits[0];
+async function genius(q,artists,title){
+const s=await viaProxy("https://genius.com/api/search/multi?per_page=6&q="+encodeURIComponent(q),true);
+const hits=((s&&s.response&&s.response.sections)||[]).flatMap(x=>x.hits||[]).filter(h=>(h.type==="song"||h.type==="top_hit")&&h.result&&h.result.url&&(!h.result._type||h.result._type==="song")).map(h=>h.result);
+let hit=null;
+if(title){
+const w=norm(title),as=[].concat(artists||[]).map(norm).filter(Boolean),bad=/\b(remix|live|demo|instrumental|slowed|sped|acoustic|karaoke|cover|snippet|leak|reprise|skit)\b/;
+let bs=0;
+for(const h of hits){
+const t=norm((h.title||"").replace(/\s*[\(\[]\s*(?:feat|ft|featuring|with)\b[^\)\]]*[\)\]]/ig,"")),pa=norm(h.primary_artist&&h.primary_artist.name);
+if(!t||!pa||!as.some(a=>pa.includes(a)||a.includes(pa)))continue;
+if(bad.test(t)&&!bad.test(w))continue;
+const sc=t===w?3:(" "+t+" ").includes(" "+w+" ")?1:0;
+if(sc>bs){bs=sc;hit=h}
+}
+}else hit=hits[0];
 if(!hit)return null;
 const html=await viaProxy(hit.url);
 if(!html)return null;
 const doc=new DOMParser().parseFromString(html,"text/html");
 doc.querySelectorAll('[data-exclude-from-selection="true"]').forEach(e=>e.remove());
 const txt=[...doc.querySelectorAll('[data-lyrics-container="true"]')].map(e=>{e.querySelectorAll("br").forEach(b=>b.replaceWith("\n"));return e.textContent}).join("\n");
-const out=txt.split("\n").map(s=>s.trim()).filter(s=>raw||!/^\[.*\]$/.test(s)).join("\n").replace(/\n{3,}/g,"\n\n").trim();
-return out.length>20?out:null;
+const out=txt.split("\n").map(s=>s.trim()).join("\n").replace(/\n{3,}/g,"\n\n").trim();
+return out.length>20&&!/have yet to be released/i.test(out)?out:null;
+}
+function fetchGenius(tr){
+if(gcache.has(tr.id))return gcache.get(tr.id);
+const artists=tr.artists.map(a=>a.name),t=clean(tr.name);
+const p=(async()=>{
+for(const q of [artists[0]+" "+t,t+" "+(artists[1]||artists[0])]){
+try{const g=await genius(q,artists,t);if(g)return g}catch(e){}
+}
+return null;
+})();
+gcache.set(tr.id,p);
+p.then(g=>{if(!g)gcache.delete(tr.id)});
+return p;
+}
+
+function resolveNames(str,names){
+const h=" "+norm(str)+" ",idx=[];
+names.forEach((a,i)=>{const n=norm(a);if(n&&h.includes(" "+n+" "))idx.push(i)});
+return idx;
+}
+function parseGenius(raw,names){
+const out=[],mem={};
+let cur=[0],seen=false;
+for(const ln of raw.split("\n")){
+const s=ln.trim();
+if(!s)continue;
+const h=s.match(/^\[(.*)\]$/);
+if(h){
+seen=true;
+const m=h[1].match(/^([^:]*):\s*(.+)$/);
+const base=norm(m?m[1]:h[1]).replace(/\s*\d+$/,"").trim();
+const rep=/chorus|hook|refrain/.test(base);
+if(m){const r=resolveNames(m[2],names);cur=r.length?r:null;if(rep)mem[base]=cur}
+else if(rep&&mem[base]!==undefined)cur=mem[base];
+else cur=[0];
+continue;
+}
+if(junk(s)||(!seen&&!out.length&&/\slyrics$/i.test(s)))continue;
+const full=fullTok(s);
+if(!full.length)continue;
+out.push({s,w:cur,core:coreTok(s),full});
+}
+return out;
+}
+function mergeLyrics(src,gl,dur){
+const L=src.map(x=>({t:x.t,s:x.s,core:coreTok(x.s),full:fullTok(x.s)}));
+const N=L.length,M=gl.length;
+if(!N||!M||N*M>4e5)return null;
+const sc=(a,b)=>{const x=lineSim(a,b);return x>=.5?x:0};
+const dp=Array.from({length:N+1},()=>new Float64Array(M+1));
+for(let a=1;a<=N;a++)for(let b=1;b<=M;b++){const s=sc(L[a-1],gl[b-1]);dp[a][b]=Math.max(dp[a-1][b],dp[a][b-1],s?dp[a-1][b-1]+s:0)}
+const mate=new Array(N).fill(-1);
+let x=N,y=M;
+while(x>0&&y>0){
+const s=sc(L[x-1],gl[y-1]);
+if(s&&dp[x][y]===dp[x-1][y-1]+s){mate[x-1]=y-1;x--;y--}
+else if(dp[x-1][y]>=dp[x][y-1])x--;
+else y--;
+}
+const real=L.filter(l=>l.full.length).length,hit=mate.filter(k=>k>=0).length;
+if(!real||hit/Math.min(real,M)<.5)return null;
+const drop=new Set();
+for(let k=0;k<N;k++){
+if(mate[k]>=0||!L[k].full.length)continue;
+let a=k-1;while(a>=0&&mate[a]<0)a--;
+let b=k+1;while(b<N&&mate[b]<0)b++;
+for(const z of [a,b]){
+if(z<0||z>=N)continue;
+const g=gl[mate[z]].full,gs=new Set(g),ws=L[k].full;
+if(ws.length>=2&&g.length>=ws.length+2&&ws.filter(w=>gs.has(w)).length/ws.length>=.8){drop.add(k);break}
+}
+}
+const out=[];
+const last=()=>out.length?out[out.length-1].t:null;
+const insert=(gs,next)=>{
+const n=gs.length,p=last();
+if(p===null){gs.forEach((k,i)=>out.push({t:Math.max(0,next-2500*(n-i)),s:gl[k].s,w:gl[k].w}));return}
+const step=Math.max(0,Math.min(2500,(next-p)/(n+1)));
+gs.forEach((k,i)=>out.push({t:p+step*(i+1),s:gl[k].s,w:gl[k].w}));
+};
+const gap=(l0,l1,g0,g1)=>{
+const ls=[],gs=[];
+for(let k=l0;k<l1;k++)if(!drop.has(k))ls.push(k);
+for(let k=g0;k<g1;k++)gs.push(k);
+const lne=ls.filter(k=>L[k].full.length);
+const nextT=l1<N?L[l1].t:Math.max(dur,(lne.length?L[lne[lne.length-1]].t:(last()||0))+2000);
+if(!gs.length){ls.forEach(k=>out.push({t:L[k].t,s:L[k].s}));return}
+if(!lne.length){insert(gs,nextT);return}
+const lset=new Set(),gset=new Set();
+lne.forEach(k=>{L[k].full.forEach(w=>lset.add(w));L[k].core.forEach(w=>lset.add(w))});
+gs.forEach(k=>gl[k].full.forEach(w=>gset.add(w)));
+if(lset.size>=3&&gset.size>=3){
+let n=0;lset.forEach(w=>{if(gset.has(w))n++});
+if(n/Math.min(lset.size,gset.size)<.5){ls.forEach(k=>out.push({t:L[k].t,s:L[k].s}));return}
+const ws=lne.map(k=>Math.max(1,L[k].full.length)),tot=ws.reduce((a,b)=>a+b,0);
+const cum=[];let c=0;ws.forEach(v=>{cum.push(c);c+=v});
+const ends=lne.map((k,i)=>i<lne.length-1?L[lne[i+1]].t:Math.max(L[k].t,Math.min(l1<N?L[l1].t:Infinity,L[k].t+4500)));
+const gws=gs.map(k=>Math.max(1,gl[k].full.length)),gt=gws.reduce((a,b)=>a+b,0);
+let gc=0;
+gs.forEach((k,i)=>{
+const p=gc/gt*tot;
+let m=0;while(m<lne.length-1&&cum[m+1]<=p)m++;
+const t0=L[lne[m]].t,fr=Math.min(1,(p-cum[m])/ws[m]);
+out.push({t:t0+fr*(ends[m]-t0),s:gl[k].s,w:gl[k].w});
+gc+=gws[i];
+});
+return;
+}
+ls.forEach(k=>out.push({t:L[k].t,s:L[k].s}));
+insert(gs,nextT);
+};
+const anchors=[];
+for(let k=0;k<N;k++)if(mate[k]>=0)anchors.push(k);
+anchors.push(N);
+let pi=-1,pj=-1;
+for(const ai of anchors){
+const aj=ai<N?mate[ai]:M;
+gap(pi+1,ai,pj+1,aj);
+if(ai<N){
+const useL=L[ai].full.length>gl[aj].full.length&&jac(L[ai].core,gl[aj].core)===1;
+out.push({t:L[ai].t,s:useL?L[ai].s:gl[aj].s,w:gl[aj].w});
+}
+pi=ai;pj=aj;
+}
+let fw;
+for(const o of out){if(o.w===undefined)o.w=fw;else fw=o.w}
+let bw;
+for(let k=out.length-1;k>=0;k--){if(out[k].w===undefined)out[k].w=bw;else bw=out[k].w}
+out.forEach(o=>{if(o.w===undefined)o.w=null});
+return out;
+}
+function refine(tr,ly){
+if(!ly||!ly.syncedLyrics||ly.lines)return Promise.resolve(ly);
+if(refined.has(tr.id))return refined.get(tr.id);
+const p=(async()=>{
+const g=await fetchGenius(tr);
+if(!g)return ly;
+const m=mergeLyrics(parseLRC(ly.syncedLyrics),parseGenius(g,rosterOf(tr)),tr.duration_ms);
+if(!m)return ly;
+const res={syncedLyrics:ly.syncedLyrics,lines:m,src:"LRCLIB + Genius"};
+cache.set(tr.id,Promise.resolve(res));
+return res;
+})().catch(()=>ly);
+refined.set(tr.id,p);
+p.then(r=>{if(r===ly)refined.delete(tr.id)});
+return p;
 }
 
 async function findLyrics(tr,hi){
@@ -299,7 +471,12 @@ return f.flatMap(r=>Array.isArray(r.value)?r.value:r.value?[r.value]:[]);
 };
 const pick=pool=>{
 let best=null,bs=-1;
-for(const c of pool){const s=score(c,tr,cname,dur);if(s>bs){bs=s;best=c}}
+for(const c of pool){
+const s=score(c,tr,cname,dur);
+if(s<0)continue;
+const k=(c.syncedLyrics?1000:0)+s;
+if(k>bs){bs=k;best=c}
+}
 if(!best&&pool.some(c=>c.instrumental&&score(c,tr,cname,dur,1)>=0))ins=true;
 return best;
 };
@@ -307,8 +484,15 @@ const first=[L("get",{artist_name:artist,track_name:name,album_name:album,durati
 if(cname!==name)first.push(L("get",{artist_name:artist,track_name:cname,album_name:album,duration:d}));
 first.push(L("search",{track_name:cname,artist_name:artist}),L("search",{q:artist+" "+cname}));
 let best=pick(await run(first));
-if(!best)best=pick(await run([L("search",{q:cname}),L("search",{track_name:name,artist_name:tr.artists.map(a=>a.name).join(" ")})]));
-if(best)return{syncedLyrics:best.syncedLyrics||"",plainLyrics:best.plainLyrics||""};
+if(!best||!best.syncedLyrics){
+const more=pick(await run([L("search",{q:cname}),L("search",{track_name:name,artist_name:tr.artists.map(a=>a.name).join(" ")})]));
+if(more&&(!best||more.syncedLyrics))best=more;
+}
+if(best&&best.syncedLyrics)return{syncedLyrics:best.syncedLyrics};
+let g=null;
+try{g=await fetchGenius(tr)}catch(e){}
+if(g){ok++;return{plainLyrics:plainFrom(g),src:"Genius"}}
+if(best&&best.plainLyrics)return{plainLyrics:best.plainLyrics};
 try{
 const r=await fetch("https://api.lyrics.ovh/v1/"+encodeURIComponent(artist)+"/"+encodeURIComponent(cname));
 ok++;
@@ -318,7 +502,6 @@ const t=j.lyrics&&j.lyrics.replace(/\r/g,"").replace(/^Paroles de la chanson.*\n
 if(t)return{plainLyrics:t,src:"lyrics.ovh"};
 }
 }catch(e){}
-try{const g=await genius(artist+" "+cname,artist,cname);if(g)return{plainLyrics:g,src:"Genius"}}catch(e){}
 if(ins)return{instrumental:true};
 if(!ok)throw new Error("net");
 return null;
@@ -400,7 +583,7 @@ if(!at)return;
 const r=await fetch("https://api.spotify.com/v1/me/player/queue",{headers:{Authorization:"Bearer "+at}});
 if(!r.ok||cur.id!==id)return;
 const q=await r.json();
-(q.queue||[]).slice(0,1).forEach(t=>{if(t&&t.artists&&t.album){if(!cache.has(t.id))fetchLyrics(t,false).catch(()=>{});fetchTempo(t)}});
+(q.queue||[]).slice(0,1).forEach(t=>{if(t&&t.artists&&t.album){fetchLyrics(t,false).then(ly=>refine(t,ly)).catch(()=>{});fetchTempo(t)}});
 }catch(e){}
 }
 async function manual(q){
@@ -410,7 +593,8 @@ setNote("Searching Genius…");
 let g=null;
 try{g=await genius(q)}catch(e){}
 if(!g){setNote("Nothing found for that search.",true);return}
-cache.set(tr.id,Promise.resolve({plainLyrics:g,src:"Genius"}));
+cache.set(tr.id,Promise.resolve({plainLyrics:plainFrom(g),src:"Genius"}));
+refined.delete(tr.id);
 loadTrack(tr,1);
 }
 
@@ -430,10 +614,20 @@ function build(list,isSynced,dir,plain,src){
 if(stageAnim){stageAnim.cancel();stageAnim=null}
 inDir=dir||1;
 trackEl.textContent="";
-stage.classList.toggle("plain",!!plain);stage.classList.toggle("sy",!!isSynced);whoArr=null;singerNow=null;$("singer").classList.toggle("on",!!(isSynced&&list.length));
+stage.classList.toggle("plain",!!plain);stage.classList.toggle("sy",!!isSynced);
+singerNow=null;$("singer").classList.remove("on");
 stage.scrollTop=0;
 if(plain){const tg=document.createElement("div");tg.className="tag";tg.textContent="These lyrics aren’t synced."+(src?" Source: "+src+".":"");trackEl.appendChild(tg)}
-els=list.map(x=>{const d=document.createElement("div");d.className="l";const sp=document.createElement("span");sp.className="tx";sp.textContent=x.s||"♪";d.appendChild(sp);trackEl.appendChild(d);return d;
+els=list.map(x=>{const d=document.createElement("div");d.className="l";const sp=document.createElement("span");sp.className="tx";sp.textContent=x.s||(plain?"\u00a0":"♪");d.appendChild(sp);trackEl.appendChild(d);return d;
+});
+const multi=roster.length>1;
+els.forEach((el,i)=>{
+const w=list[i].w;
+if(multi&&w&&w.length===1&&w[0]!==0){
+const c=colorFor(w[0]);
+el.style.setProperty("--hi","color-mix(in srgb,"+c+" 75%,#fff)");
+el.style.setProperty("--lo","color-mix(in srgb,"+c+" 42%,transparent)");
+}
 });
 lines=list;synced=isSynced;active=-2;fresh=isSynced&&list.length>0;
 trackEl.style.transition="none";
@@ -442,13 +636,21 @@ void trackEl.offsetWidth;
 trackEl.style.transition="";
 if(plain&&list.length)stage.animate([{opacity:0,transform:"translateY("+(inDir*36)+"px)",filter:"blur(8px)"}],{duration:900,easing:EASE});
 }
+function swapLines(ly){
+build(ly.lines,true,1);
+fresh=false;
+trackEl.style.transition="none";
+setActive(findIndex(pos()+offset));
+void trackEl.offsetWidth;
+trackEl.style.transition="";
+}
 function setNote(t,retry){
 note.textContent=t;
 note.style.opacity=t?1:0;
 if(t&&retry&&role==="host"&&cur.tr){
 const b=document.createElement("button");
 b.textContent="Search again";
-b.onclick=()=>{cache.delete(cur.tr.id);loadTrack(cur.tr,1)};
+b.onclick=()=>{cache.delete(cur.tr.id);gcache.delete(cur.tr.id);refined.delete(cur.tr.id);loadTrack(cur.tr,1)};
 note.appendChild(b);
 const w=document.createElement("div");w.className="msr";
 const i=document.createElement("input");i.placeholder="artist and song";i.value=cur.tr.artists[0].name+" "+clean(cur.tr.name);
@@ -462,7 +664,8 @@ function showLyrics(ly,dir){
 if(ly.error){setNote("Couldn’t reach the lyrics service.",true);return}
 if(ly.none){setNote("No lyrics found for this song.",true);return}
 if(ly.instrumental){setNote("Instrumental");return}
-if(ly.syncedLyrics){const l=parseLRC(ly.syncedLyrics);if(l.length){build(l,true,dir);setWho(curWho);return}}
+if(ly.lines&&ly.lines.length){build(ly.lines,true,dir);return}
+if(ly.syncedLyrics){const l=parseLRC(ly.syncedLyrics);if(l.length){build(l,true,dir);return}}
 if(ly.plainLyrics){build(ly.plainLyrics.split("\n").map(s=>({t:0,s:s.trim()})),false,dir,true,ly.src);return}
 setNote("No lyrics found for this song.",true);
 }
@@ -485,76 +688,39 @@ curLy=failed?{error:1}:(data||{none:1});
 showLyrics(curLy,dir);
 send({type:"ly",id:my,ly:curLy});
 if(!tempo&&curLy.syncedLyrics){const e=estimateTempo(parseLRC(curLy.syncedLyrics));if(e){setTempo(e);send(tempoMsg())}}
-if(curLy.syncedLyrics&&tr.artists.length>1)attribute(tr,parseLRC(curLy.syncedLyrics)).then(r=>{if(r&&cur.id===my){setWho(r);send(whoMsg())}}).catch(()=>{});
+if(curLy.syncedLyrics&&!curLy.lines)refine(tr,curLy).then(r=>{
+if(r&&r.lines&&live()&&curLy&&curLy.syncedLyrics===r.syncedLyrics){curLy=r;swapLines(r);send({type:"ly",id:my,ly:r,up:1})}
+});
 }
 
-let curWho=null,whoArr=null,whoMain="";
 const hueOf=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))%360;return h};
-const sim=(a,b)=>{const A=new Set(a.split(" ")),B=new Set(b.split(" "));let n=0;A.forEach(w=>{if(B.has(w))n++});return n/(A.size+B.size-n)};
-const flat=s=>norm((s||"").replace(/\([^)]*\)/g,""));
-async function attribute(tr,list){
-const main=tr.artists[0].name,t=clean(tr.name);
-const txt=await genius(main+" "+t,tr.artists.map(a=>a.name),t,true);
-if(!txt)return null;
-const g=[];let sec=null,named=false;
-for(const s of txt.split("\n")){
-const h=s.match(/^\[(.*)\]$/);
-if(h){const m=h[1].match(/:\s*(.+)$/);sec=m?m[1].trim():null;if(m)named=true}
-else{const n=flat(s);if(n)g.push({n,w:sec})}
+function colorFor(i){
+if(i===0)return"var(--a1)";
+if(i===1)return"var(--a2)";
+if(i===2)return"var(--a3)";
+return"hsl("+hueOf(roster[i]||String(i))+" 80% 72%)";
 }
-if(!named||!g.length)return null;
-const A=list.map(l=>flat(l.s)),N=A.length,M=g.length;
-const sc=(a,b)=>{if(!a||!b)return 0;if(a===b)return 1;const x=sim(a,b);return x>=.5?x:0};
-const dp=Array.from({length:N+1},()=>new Float64Array(M+1));
-for(let i=1;i<=N;i++)for(let j=1;j<=M;j++){const s=sc(A[i-1],g[j-1].n);dp[i][j]=Math.max(dp[i-1][j],dp[i][j-1],s?dp[i-1][j-1]+s:0)}
-const at=new Array(N).fill(-1);
-let i=N,j=M,hit=0;
-while(i>0&&j>0){
-const s=sc(A[i-1],g[j-1].n);
-if(s&&dp[i][j]===dp[i-1][j-1]+s){at[i-1]=j-1;hit++;i--;j--}
-else if(dp[i-1][j]>=dp[i][j-1])i--;
-else j--;
-}
-let prev=g[0].w||main;
-const who=at.map(k=>{if(k>=0)prev=g[k].w||main;return prev});
-return hit/Math.max(1,A.filter(Boolean).length)>.35?{who,main}:null;
-}
-let mainArtist="",singerNow=null,fullArtist="",trackArtists=[];
-const partsOf=n=>n.split(/\s*(?:,|&|\+|\/|\band\b)\s*/i).filter(Boolean);
-const sameName=(a,b)=>{const x=norm(a),y=norm(b);return !!x&&!!y&&(x===y||(" "+x+" ").includes(" "+y+" ")||(" "+y+" ").includes(" "+x+" "))};
-const isMain=n=>sameName(n,curWho?curWho.main:mainArtist);
-function colorFor(n){
-if(isMain(n))return"var(--a1)";
-const k=trackArtists.slice(1).findIndex(a=>sameName(a,n));
-if(k<=0)return"var(--a2)";
-if(k===1)return"var(--a3)";
-return"hsl("+hueOf(n)+" 80% 72%)";
-}
-function styleArtist(el,name){
-const p=partsOf(name);
-if(p.length>1){el.classList.add("duo");el.style.color="";el.style.setProperty("--g1",colorFor(p[0]));el.style.setProperty("--g2",colorFor(p[1]))}
-else{el.classList.remove("duo");el.style.color=colorFor(name)}
-}
-function paintArtist(name,dir,delay){swapText($("artist"),name,dir,delay||0,el=>styleArtist(el,name))}
-function updateSinger(i,force){
-const arr=curWho&&curWho.who,main=curWho?curWho.main:mainArtist,w=(arr&&arr[Math.max(0,i)])||main;
-if(!w||(w===singerNow&&!force))return;
-singerNow=w;
-$("sdot").style.background=colorFor(partsOf(w)[0]||w);
-swapText($("sname"),w,1,0);
-if(curWho)paintArtist(w,1,0);
-}
-function setWho(r){
-curWho=r;
-const arr=r&&r.who;
-els.forEach((el,i)=>{
-el.style.removeProperty("--hi");el.style.removeProperty("--lo");
-const w=arr&&arr[i];
-if(w&&partsOf(w).length===1&&!isMain(w)){const c=colorFor(w);el.style.setProperty("--hi","color-mix(in srgb,"+c+" 75%,#fff)");el.style.setProperty("--lo","color-mix(in srgb,"+c+" 42%,transparent)")}
+function paintArtist(dir,delay){
+swapText($("artist"),trackArtists.join(", "),dir,delay||0,el=>{
+el.textContent="";
+trackArtists.forEach((n,i)=>{
+if(i){const c=document.createElement("span");c.textContent=", ";c.style.color="var(--mid)";el.appendChild(c)}
+const s=document.createElement("span");s.textContent=n;s.style.color=colorFor(i);el.appendChild(s);
 });
-updateSinger(active,true);
+});
 }
-const whoMsg=()=>({type:"who",id:cur.id,who:curWho&&curWho.who,main:curWho&&curWho.main});
+function updateSinger(i,force){
+const el=$("singer");
+let w=null;
+if(synced&&lines.length)w=roster.length<2?[0]:(lines[Math.max(0,i)]||{}).w;
+if(!w||!w.length){singerNow=null;el.classList.remove("on");return}
+const key=w.join(",");
+el.classList.add("on");
+if(key===singerNow&&!force)return;
+singerNow=key;
+$("sdot").style.background=colorFor(w[0]);
+swapText($("sname"),w.map(k=>roster[k]||"").filter(Boolean).join(" & "),1,0);
+}
 function tick(t){
 if(!synced||!els.length)return;
 const i=active;
@@ -709,12 +875,12 @@ $("pulse").animate([{opacity:.25,transform:"scale(1)"},{opacity:.85,transform:"s
 }
 function onTrack(v,playing,anchor,dir){
 cur={id:v.id,dur:v.dur,playing,pos:anchor,at:performance.now(),tr:null};
-mainArtist=v.artist.split(", ")[0];
+trackArtists=v.artists||v.artist.split(", ");
+roster=v.roster||trackArtists;
 endPolled=false;hold=0;lastSec=-1;
 setTempo(null);
 swapText($("title"),v.name,dir,0);
-fullArtist=v.artist;trackArtists=v.artist.split(", ");
-paintArtist(fullArtist,dir,70);
+paintArtist(dir,70);
 $("dur").textContent=fmt(v.dur);
 document.title=v.name+" · Synchrony";
 swapArt(v.art,dir);
@@ -737,8 +903,8 @@ idle.style.display="none";
 const tr=d.item,anchor=d.progress_ms+(t1-t0)/2,now=performance.now();
 if(tr.id!==cur.id){
 const dir=fxDir;
-fxDir=1;curLy=null;curWho=null;
-lastV={id:tr.id,name:tr.name,artist:tr.artists.map(a=>a.name).join(", "),art:(tr.album.images[0]||{}).url,dur:tr.duration_ms};
+fxDir=1;curLy=null;
+lastV={id:tr.id,name:tr.name,artist:tr.artists.map(a=>a.name).join(", "),artists:tr.artists.map(a=>a.name),roster:rosterOf(tr),art:(tr.album.images[0]||{}).url,dur:tr.duration_ms};
 lastDir=dir;
 onTrack(lastV,d.is_playing,anchor,dir);
 cur.tr=tr;
@@ -854,7 +1020,7 @@ const conns=new Set();
 const send=m=>{conns.forEach(c=>{if(c.open)try{c.send(m)}catch(e){}})};
 const sendHost=m=>{if(hostConn&&hostConn.open)try{hostConn.send(m)}catch(e){}};
 const posMsg=()=>({type:"pos",id:cur.id,pos:pos(),playing:cur.playing});
-const trackMsg=()=>({type:"track",...lastV,pos:pos(),playing:cur.playing,dir:lastDir,ly:curLy,who:curWho&&curWho.who,main:curWho&&curWho.main,tempo});
+const trackMsg=()=>({type:"track",...lastV,pos:pos(),playing:cur.playing,dir:lastDir,ly:curLy,tempo});
 const tempoMsg=()=>({type:"tempo",id:cur.id,tempo});
 const sendPos=()=>{if(conns.size&&cur.id)send(posMsg())};
 
@@ -932,14 +1098,19 @@ $("idle").style.display="none";
 if(m.id!==cur.id){
 onTrack(m,m.playing,m.pos,m.dir||1);
 if(m.tempo)setTempo(m.tempo);
-curLy=m.ly||null;curWho=m.who?{who:m.who,main:m.main}:null;
+curLy=m.ly||null;
 remoteTrack(m);
 setPlayingUI();
 }else syncPos(m);
 }else if(m.type==="ly"){
-if(m.id===cur.id){curLy=m.ly;if(stageReady){setNote("");showLyrics(m.ly,1)}}
-}else if(m.type==="who"){
-if(m.id===cur.id&&m.who){curWho={who:m.who,main:m.main};if(stageReady)setWho(curWho)}
+if(m.id===cur.id){
+curLy=m.ly;
+if(stageReady){
+setNote("");
+if(m.up&&m.ly&&m.ly.lines&&synced)swapLines(m.ly);
+else showLyrics(m.ly,1);
+}
+}
 }else if(m.type==="tempo"){
 if(m.id===cur.id&&m.tempo)setTempo(m.tempo);
 }else if(m.type==="pos"){
