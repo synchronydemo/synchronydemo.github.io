@@ -6,24 +6,35 @@
 <title>Synchrony</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%}
-body{background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center}
-.view{display:none}
-.view.active{display:block}
-h1{font-weight:200;font-size:clamp(1.5rem,5vw,3rem);letter-spacing:.5em;text-transform:uppercase;padding-left:.5em}
-p{font-weight:300;font-size:.75rem;letter-spacing:.3em;text-transform:uppercase;opacity:.5}
+html,body{height:100%;overflow:hidden}
+body{background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.view{display:none;height:100%;align-items:center;justify-content:center;text-align:center}
+.view.active{display:flex}
+#app.active{display:block;position:relative}
+p.s{font-weight:300;font-size:.75rem;letter-spacing:.3em;text-transform:uppercase;opacity:.5}
 button{background:none;border:1px solid #fff;color:#fff;padding:.9rem 2rem;margin-top:2rem;font-size:.75rem;letter-spacing:.3em;text-transform:uppercase;cursor:pointer;transition:background .2s,color .2s}
 button:hover{background:#fff;color:#000}
+#stage{position:absolute;inset:0;overflow:hidden;-webkit-mask-image:linear-gradient(transparent,#000 28%,#000 72%,transparent);mask-image:linear-gradient(transparent,#000 28%,#000 72%,transparent)}
+#lines{position:absolute;left:0;right:0;top:50%;padding:0 8vw;will-change:transform;transition:transform .55s cubic-bezier(.22,.8,.2,1);backface-visibility:hidden}
+.l{text-align:center;font-weight:300;font-size:clamp(1.4rem,4.2vw,3rem);line-height:1.25;margin:.85em 0;opacity:.14;transform:scale(.9);transition:opacity .45s ease,transform .45s cubic-bezier(.22,.8,.2,1);will-change:transform,opacity}
+.l.n{opacity:.32}
+.l.a{opacity:1;transform:scale(1)}
+#msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center}
+#msg.on{display:flex}
 </style>
 </head>
 <body>
-<div class="view active" id="loading"><p>Connecting</p></div>
-<div class="view" id="done"><h1>Coming Soon</h1></div>
-<div class="view" id="error"><p>Connection failed</p><button id="retry">Retry</button></div>
+<div class="view active" id="loading"><p class="s">Connecting</p></div>
+<div class="view" id="error"><div><p class="s">Connection failed</p><button id="retry">Retry</button></div></div>
+<div class="view" id="app">
+<div id="stage"><div id="lines"></div></div>
+<div id="msg"><p class="s" id="msgtext"></p></div>
+</div>
 <script>
 const clientId="c361237077b7462180c155eafff8aeda";
 const redirectUri="https://synchronydemo.github.io/";
-const scope="user-read-private user-read-email";
+const scope="user-read-currently-playing user-read-playback-state";
+const offset=0;
 
 function show(id){
   document.querySelectorAll(".view").forEach(function(v){v.classList.remove("active")});
@@ -58,6 +69,7 @@ async function connect(){
 function saveTokens(data){
   localStorage.setItem("sp_access",data.access_token);
   localStorage.setItem("sp_expires",String(Date.now()+data.expires_in*1000));
+  localStorage.setItem("sp_scope",scope);
   if(data.refresh_token){localStorage.setItem("sp_refresh",data.refresh_token)}
 }
 
@@ -69,6 +81,273 @@ async function requestToken(body){
   });
   if(!res.ok){throw new Error("token")}
   saveTokens(await res.json());
+}
+
+async function getToken(){
+  const expires=Number(localStorage.getItem("sp_expires"));
+  if(localStorage.getItem("sp_access")&&expires-Date.now()>60000){
+    return localStorage.getItem("sp_access");
+  }
+  const refresh=localStorage.getItem("sp_refresh");
+  if(!refresh){connect();throw new Error("auth")}
+  try{
+    await requestToken({client_id:clientId,grant_type:"refresh_token",refresh_token:refresh});
+  }catch(e){
+    localStorage.removeItem("sp_access");
+    localStorage.removeItem("sp_refresh");
+    connect();
+    throw new Error("auth");
+  }
+  return localStorage.getItem("sp_access");
+}
+
+const linesEl=document.getElementById("lines");
+const msgEl=document.getElementById("msg");
+const msgText=document.getElementById("msgtext");
+
+let times=[];
+let els=[];
+let ys=[];
+let cur=-2;
+let curId=null;
+let playing=false;
+let anchorPos=0;
+let anchorAt=0;
+let raf=0;
+let pollTimer=0;
+let hidden=document.hidden;
+let abortCtl=null;
+const cache=new Map();
+
+function setMsg(text){
+  if(text){
+    msgText.textContent=text;
+    msgEl.classList.add("on");
+  }else{
+    msgEl.classList.remove("on");
+  }
+}
+
+function position(){
+  return anchorPos+(playing?performance.now()-anchorAt:0)+offset;
+}
+
+function measure(){
+  ys=els.map(function(el){return el.offsetTop+el.offsetHeight/2});
+}
+
+function place(idx,instant){
+  const y=ys[Math.max(idx,0)]||0;
+  if(instant){linesEl.style.transition="none"}
+  linesEl.style.transform="translate3d(0,"+(-y)+"px,0)";
+  if(instant){linesEl.offsetHeight;linesEl.style.transition=""}
+}
+
+function setLine(idx,instant){
+  const from=Math.max(cur-2,0);
+  const to=Math.min(cur+2,els.length-1);
+  for(let i=from;i<=to;i++){els[i].className="l"}
+  cur=idx;
+  const a=Math.max(idx-2,0);
+  const b=Math.min(idx+2,els.length-1);
+  for(let i=a;i<=b;i++){els[i].className=i===idx?"l a":"l n"}
+  place(idx,instant);
+}
+
+function findLine(t){
+  let lo=0,hi=times.length-1,r=-1;
+  while(lo<=hi){
+    const mid=(lo+hi)>>1;
+    if(times[mid]<=t){r=mid;lo=mid+1}else{hi=mid-1}
+  }
+  return r;
+}
+
+function sync(instant){
+  if(!times.length)return;
+  const t=position();
+  let idx=cur;
+  const nextT=cur+1<times.length?times[cur+1]:Infinity;
+  if(cur<0||t<times[cur]||t>=nextT){idx=findLine(t)}
+  if(idx!==cur){setLine(idx,instant)}
+}
+
+function tick(){
+  raf=0;
+  if(!playing||hidden||!times.length)return;
+  sync(false);
+  raf=requestAnimationFrame(tick);
+}
+
+function kick(){
+  if(!raf&&playing&&!hidden&&times.length){raf=requestAnimationFrame(tick)}
+}
+
+function parseLrc(text){
+  const out=[];
+  const re=/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/;
+  text.split("\n").forEach(function(line){
+    const m=re.exec(line.trim());
+    if(m){out.push({t:(Number(m[1])*60+Number(m[2]))*1000,s:m[3]||"♪"})}
+  });
+  return out;
+}
+
+function render(list,instant){
+  linesEl.textContent="";
+  times=[];
+  els=[];
+  cur=-2;
+  if(!list||!list.length){
+    setMsg(list===null?"No synced lyrics":"");
+    return;
+  }
+  setMsg("");
+  const frag=document.createDocumentFragment();
+  list.forEach(function(l){
+    const d=document.createElement("div");
+    d.className="l";
+    d.textContent=l.s;
+    times.push(l.t);
+    els.push(d);
+    frag.appendChild(d);
+  });
+  linesEl.appendChild(frag);
+  measure();
+  cur=-1;
+  setLine(-1,true);
+  sync(true);
+  kick();
+}
+
+async function fetchLyrics(item,signal){
+  const artist=item.artists[0].name;
+  const base="https://lrclib.net/api/";
+  const q=new URLSearchParams({
+    track_name:item.name,
+    artist_name:artist,
+    album_name:item.album.name,
+    duration:String(Math.round(item.duration_ms/1000))
+  });
+  try{
+    const r=await fetch(base+"get?"+q.toString(),{signal:signal});
+    if(r.ok){
+      const j=await r.json();
+      if(j.syncedLyrics){return parseLrc(j.syncedLyrics)}
+    }
+    const s=new URLSearchParams({track_name:item.name,artist_name:artist});
+    const r2=await fetch(base+"search?"+s.toString(),{signal:signal});
+    if(r2.ok){
+      const arr=await r2.json();
+      const dur=item.duration_ms/1000;
+      const hit=arr.filter(function(x){return x.syncedLyrics}).sort(function(a,b){return Math.abs(a.duration-dur)-Math.abs(b.duration-dur)})[0];
+      if(hit){return parseLrc(hit.syncedLyrics)}
+    }
+  }catch(e){
+    if(e.name==="AbortError")throw e;
+  }
+  return null;
+}
+
+async function loadTrack(item){
+  if(abortCtl){abortCtl.abort()}
+  linesEl.textContent="";
+  times=[];
+  els=[];
+  cur=-2;
+  setMsg("");
+  if(cache.has(item.id)){
+    render(cache.get(item.id));
+    return;
+  }
+  abortCtl=new AbortController();
+  try{
+    const list=await fetchLyrics(item,abortCtl.signal);
+    cache.set(item.id,list);
+    if(cache.size>40){cache.delete(cache.keys().next().value)}
+    if(curId===item.id){render(list)}
+  }catch(e){}
+}
+
+function apply(data,t0,t1){
+  const item=data.item;
+  if(!item||data.currently_playing_type!=="track"){
+    curId=null;
+    playing=false;
+    linesEl.textContent="";
+    times=[];
+    els=[];
+    setMsg("No lyrics");
+    return;
+  }
+  const mid=(t0+t1)/2;
+  const pos=data.progress_ms;
+  const was=playing;
+  const predicted=anchorPos+(was?mid-anchorAt:0);
+  playing=data.is_playing;
+  if(item.id!==curId){
+    curId=item.id;
+    anchorPos=pos;
+    anchorAt=mid;
+    loadTrack(item);
+  }else if(was!==playing||Math.abs(pos-predicted)>70){
+    anchorPos=pos;
+    anchorAt=mid;
+    sync(false);
+  }
+  kick();
+}
+
+async function poll(){
+  clearTimeout(pollTimer);
+  let delay=3000;
+  try{
+    const token=await getToken();
+    const t0=performance.now();
+    const res=await fetch("https://api.spotify.com/v1/me/player/currently-playing",{headers:{Authorization:"Bearer "+token}});
+    const t1=performance.now();
+    if(res.status===200){
+      apply(await res.json(),t0,t1);
+    }else if(res.status===204){
+      curId=null;
+      playing=false;
+      linesEl.textContent="";
+      times=[];
+      els=[];
+      setMsg("Nothing playing");
+      delay=5000;
+    }else if(res.status===401){
+      localStorage.removeItem("sp_expires");
+      delay=300;
+    }else if(res.status===429){
+      delay=(Number(res.headers.get("Retry-After"))||5)*1000;
+    }else{
+      delay=5000;
+    }
+  }catch(e){
+    delay=5000;
+  }
+  pollTimer=setTimeout(poll,hidden?Math.max(delay,10000):delay);
+}
+
+function start(){
+  show("app");
+  poll();
+  let rt=0;
+  window.addEventListener("resize",function(){
+    clearTimeout(rt);
+    rt=setTimeout(function(){
+      if(els.length){measure();place(cur,true)}
+    },120);
+  });
+  document.addEventListener("visibilitychange",function(){
+    hidden=document.hidden;
+    if(!hidden){
+      sync(true);
+      kick();
+      poll();
+    }
+  });
 }
 
 async function init(){
@@ -89,31 +368,20 @@ async function init(){
         code_verifier:localStorage.getItem("sp_verifier")
       });
       history.replaceState({},"",redirectUri);
-      show("done");
+      start();
     }catch(e){
       history.replaceState({},"",redirectUri);
       show("error");
     }
     return;
   }
-  const access=localStorage.getItem("sp_access");
-  const expires=Number(localStorage.getItem("sp_expires"));
-  if(access&&expires>Date.now()){
-    show("done");
+  if(localStorage.getItem("sp_scope")===scope&&(localStorage.getItem("sp_refresh")||Number(localStorage.getItem("sp_expires"))>Date.now())){
+    start();
     return;
   }
-  const refresh=localStorage.getItem("sp_refresh");
-  if(refresh){
-    try{
-      await requestToken({
-        client_id:clientId,
-        grant_type:"refresh_token",
-        refresh_token:refresh
-      });
-      show("done");
-      return;
-    }catch(e){}
-  }
+  localStorage.removeItem("sp_access");
+  localStorage.removeItem("sp_refresh");
+  localStorage.removeItem("sp_expires");
   connect();
 }
 
